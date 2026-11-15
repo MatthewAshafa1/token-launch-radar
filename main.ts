@@ -9,6 +9,10 @@
 // summary the judge reads. The scorer rebuilds the dossier from /output and
 // compares it byte for byte, so the dossier is always written last.
 //
+// The run is deterministic: the same snapshot in always produces the same
+// board out, because every sort has a slug tie-break and no clock or random
+// value is read anywhere in the scoring path.
+//
 // Run outside the grader's container with:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
 
@@ -43,6 +47,7 @@ if (!existsSync(inputFile)) {
 }
 const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
+// Score first, write second: nothing is written until the board passes the gate.
 const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
 const { board, radar } = buildRadar(snapshot);
 const issue = boardIssue(board, snapshot);
@@ -70,6 +75,8 @@ function copyFiles(from: string, to: string): string[] {
   return copied;
 }
 
+// Dashboard and screenshots are copied verbatim, so the dossier built from
+// these copies describes exactly the files the judge will open.
 const dashboardFiles = copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
 const shots = copyFiles(join(here, 'screenshots'), join(out, 'screenshots'));
 if (shots.length < 3) {
