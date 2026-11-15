@@ -400,6 +400,18 @@
       s.warming_count + ' warming, ' + s.cooling_count + ' cooling and ' + s.cold_count +
       ' cold. The middle protocol moved ' + fmtPct(s.median_change_7d) +
       ' in the last 7 days, and ' + s.flagged_count + ' carry at least one risk flag.'));
+    if (data.chain_leaders && data.chain_leaders.length > 0) {
+      panel.appendChild(el('h3', { class: 'insights-subhead' }, 'Biggest on each chain'));
+      var leaders = el('div', { class: 'insights-leaders' }, data.chain_leaders.map(function (l) {
+        return el('div', { class: 'insights-leader' },
+          el('span', { class: 'insights-leader-chain' }, l.chain),
+          el('strong', null, l.name),
+          el('span', { class: 'insights-leader-tvl' }, fmtUsd(l.tvl_usd)),
+          el('span', { class: 'tier tier-' + l.tier }, l.tier),
+          el('span', { class: 'insights-leader-flags' }, l.flag_count > 0 ? l.flag_count + (l.flag_count === 1 ? ' flag' : ' flags') : 'no flags'));
+      }));
+      panel.appendChild(leaders);
+    }
     if (!data.movers || data.movers.length === 0) {
       panel.appendChild(el('p', { class: 'insights-empty' }, 'No movers in this snapshot.'));
       return;
