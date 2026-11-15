@@ -390,6 +390,46 @@
     }
   }
 
+  function fillInsightsPanel() {
+    var panel = document.getElementById('insights-panel');
+    var data = window.INSIGHTS;
+    if (!panel || !data) return;
+    var s = data.summary;
+    panel.appendChild(el('p', { class: 'insights-lede' },
+      'Across ' + s.pre_token_count + ' pre-token protocols, ' + s.hot_count + ' are hot, ' +
+      s.warming_count + ' warming, ' + s.cooling_count + ' cooling and ' + s.cold_count +
+      ' cold. The middle protocol moved ' + fmtPct(s.median_change_7d) +
+      ' in the last 7 days, and ' + s.flagged_count + ' carry at least one risk flag.'));
+    if (!data.movers || data.movers.length === 0) {
+      panel.appendChild(el('p', { class: 'insights-empty' }, 'No movers in this snapshot.'));
+      return;
+    }
+    var head = el('tr', null,
+      el('th', { scope: 'col' }, '#'),
+      el('th', { scope: 'col' }, 'Protocol'),
+      el('th', { scope: 'col' }, 'TVL'),
+      el('th', { scope: 'col' }, '7d'),
+      el('th', { scope: 'col' }, 'Momentum'),
+      el('th', { scope: 'col' }, 'Risk flags'));
+    var body = el('tbody', null, data.movers.map(function (m, i) {
+      return el('tr', null,
+        el('td', null, String(i + 1)),
+        el('td', null,
+          el('strong', null, m.name),
+          el('span', { class: 'insights-cat' }, ' ' + m.category)),
+        el('td', null, fmtUsd(m.tvl_usd)),
+        el('td', null, fmtPct(m.change_7d)),
+        el('td', null, el('span', { class: 'tier tier-' + m.tier }, m.tier)),
+        el('td', null, m.flags.length > 0 ? m.flags.join(' · ') : '—'));
+    }));
+    panel.appendChild(el('div', { class: 'insights-table-wrap' },
+      el('table', { class: 'insights-table' }, el('thead', null, head), body)));
+    panel.appendChild(el('p', { class: 'insights-note' },
+      'Hot means +25% or more in 7 days; warming +10%; cooling -5% to +10%; cold below -5%. ' +
+      'Flags: young (listed under 180 days ago), single-chain, near-floor (TVL under 1.5x the $50M floor). ' +
+      'A flag is a prompt to check, not a verdict.'));
+  }
+
   function render() {
     app.textContent = '';
     var shell = el('div', { class: 'shell' });
@@ -407,6 +447,7 @@
 
   readHash();
   render();
+  fillInsightsPanel();
   window.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && dialog.open) dialog.close();
   });
