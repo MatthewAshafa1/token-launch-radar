@@ -78,10 +78,71 @@ export interface InsightSummary {
   flagged_count: number;
 }
 
+/** One row of the chain-leaders strip: the biggest pre-token protocol on each chain. */
+export interface ChainLeader {
+  chain: string;
+  slug: string;
+  name: string;
+  tvl_usd: number;
+  change_7d: number;
+  tier: MomentumTier;
+  flag_count: number;
+}
+
+/** How many chains the leaders strip shows. */
+export const LEADER_CHAINS = 8;
+
+/**
+ * The biggest pre-token protocol on each chain, best first by TVL.
+ *
+ * A chain's leader is the protocol a farmer would meet first there, so the
+ * strip answers "where is the money on each chain" without scrolling the
+ * whole board. Chains are ordered by their leader's TVL, biggest first, and
+ * ties break on slug so the order is stable between runs. Only chains with
+ * at least one pre-token protocol appear; a chain whose pre-token protocols
+ * are all below the snapshot floor is still shown, because the floor is
+ * about the snapshot, not about the chain. The flag count beside each
+ * leader is the same risk-flag count the movers table shows, so a leader
+ * carrying two flags reads as big but early, and a leader carrying none
+ * reads as big and settled.
+ */
+export function buildChainLeaders(pre: SnapshotProtocol[], asOf: string, floorUsd: number): ChainLeader[] {
+  const bestByChain = new Map<string, SnapshotProtocol>();
+  for (const p of pre) {
+    for (const chain of p.chains) {
+      const current = bestByChain.get(chain);
+      if (current === undefined) {
+        bestByChain.set(chain, p);
+        continue;
+      }
+      if (p.tvl_usd === current.tvl_usd) {
+        if (p.slug < current.slug) bestByChain.set(chain, p);
+        continue;
+      }
+      if (p.tvl_usd > current.tvl_usd) bestByChain.set(chain, p);
+    }
+  }
+  const leaders = [...bestByChain.entries()].map(([chain, p]) => ({
+    chain,
+    slug: p.slug,
+    name: p.name,
+    tvl_usd: p.tvl_usd,
+    change_7d: round4dp(p.change_7d),
+    tier: momentumTier(p.change_7d),
+    flag_count: riskFlags(p, asOf, floorUsd).length,
+  }));
+  leaders.sort((a, b) => {
+    if (b.tvl_usd !== a.tvl_usd) return b.tvl_usd - a.tvl_usd;
+    return a.chain < b.chain ? -1 : a.chain > b.chain ? 1 : 0;
+  });
+  return leaders.slice(0, LEADER_CHAINS);
+}
+
 /** Everything the dashboard panel needs, as plain JSON. */
 export interface Insights {
   as_of: string;
   movers: InsightMover[];
+  chain_leaders: ChainLeader[];
   tier_counts: Record<MomentumTier, number>;
   summary: InsightSummary;
 }
@@ -159,6 +220,7 @@ export function buildInsights(snapshot: Snapshot): Insights {
   const movers = ranked
     .slice(0, MOVER_COUNT)
     .map((p) => toMover(p, snapshot.as_of, snapshot.floor_usd));
+  const chain_leaders = buildChainLeaders(pre, snapshot.as_of, snapshot.floor_usd);
   const tier_counts: Record<MomentumTier, number> = {
     hot: 0,
     warming: 0,
@@ -181,7 +243,7 @@ export function buildInsights(snapshot: Snapshot): Insights {
     top_mover_slug: movers.length > 0 ? movers[0].slug : null,
     flagged_count: flagged,
   };
-  return { as_of: snapshot.as_of, movers, tier_counts, summary };
+  return { as_of: snapshot.as_of, movers, chain_leaders, tier_counts, summary };
 }
 
 /**
