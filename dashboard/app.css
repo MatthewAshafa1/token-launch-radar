@@ -146,3 +146,20 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* Momentum & risk insights panel (below the board). */
+#insights-panel { max-width: 72rem; margin: 2rem auto 0; padding: 0 1rem 2rem; }
+#insights-panel h2 { font-size: 1.35rem; margin: 0 0 0.5rem; }
+.insights-lede { margin: 0 0 1rem; line-height: 1.5; }
+.insights-empty { color: #666; }
+.insights-table-wrap { overflow-x: auto; }
+.insights-table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+.insights-table th, .insights-table td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+.insights-table th { font-weight: 700; }
+.insights-cat { color: #666; font-weight: 400; }
+.tier { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.85rem; font-weight: 700; }
+.tier-hot { background: #fde8e8; color: #9b1c1c; }
+.tier-warming { background: #fef3c7; color: #92400e; }
+.tier-cooling { background: #e0e7ff; color: #3730a3; }
+.tier-cold { background: #e5e7eb; color: #374151; }
+.insights-note { margin: 1rem 0 0; font-size: 0.85rem; color: #555; line-height: 1.5; }
