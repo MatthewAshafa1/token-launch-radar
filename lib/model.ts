@@ -29,6 +29,9 @@
 // tilts it toward protocols with a long no-token track record. Breadth is a
 // small nudge only. The dashboard states the formula and recomputes each row,
 // so the page and board.json always agree.
+//
+// Determinism note: every sort in this file breaks ties by slug, so the same
+// snapshot always produces the same board in the same order.
 
 export interface SnapshotProtocol {
   slug: string;
@@ -180,7 +183,11 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
-/** The multipliers and the implied value one protocol gets under the model. */
+/**
+ * The multipliers and the implied value one protocol gets under the model.
+ * Every factor comes from the protocol's own snapshot record; nothing is
+ * fetched or looked up elsewhere, so the value is fully reproducible.
+ */
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
@@ -345,7 +352,10 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   ];
 }
 
-/** The board: watchlist first, then the early radar, scored and ranked 1..N. */
+/**
+ * The board: watchlist first, then the early radar, scored and ranked 1..N.
+ * Ties on implied value break by slug, so the ranking is fully deterministic.
+ */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
   const index = bySlug(snapshot.protocols);
   const chosen = new Map<string, SnapshotProtocol>();
