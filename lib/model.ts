@@ -1,41 +1,41 @@
-// Token Radar model (radar-3): sealed snapshot in, ranked board out.
+// Token Radar model (radar-4): sealed snapshot in, ranked board out.
 //
-// radar-3 fixes what made radar-2 a TVL table with a nudge:
+// radar-4 keeps radar-3's fixes and adds the one thing the top
+// builders all do: every value term is blind-tested before it is used.
 //
-//   1. The size multiple is FITTED, not asserted. The snapshot's own traded
-//      protocols (market cap vs TVL) give a log-log size curve, and a
-//      two-fold hold-out test reports how far that curve beats a flat 0.30
-//      multiple. The fit and the hold-out numbers are computed at run time
-//      from the snapshot and shipped in data.js, so the dashboard shows
-//      numbers the program just measured, not numbers typed in by hand.
-//   2. The exclusion rule is applied to EVERY ranked row, not just the
-//      watchlist. A wrapped, staked or bridged product of a token that
-//      already trades is not a protocol waiting on a launch, whatever its
-//      TVL: radar-2 ranked 34 of them (11 Bridge, 15 Liquid Staking, 6
-//      Canonical Bridge, 2 Liquid Restaking). radar-3 ranks none.
-//   3. The board ranks EVERY rankable pre-token protocol, not the top 160
-//      by TVL below the floor. A small protocol growing fast is visible.
+//   1. The size multiple is FITTED, not asserted. The snapshot's own
+//      traded protocols give a log-log size curve, and a two-fold
+//      hold-out test reports how far that curve beats a flat 0.30
+//      multiple.
+//   2. The exclusion rule is applied to EVERY ranked row. A wrapped,
+//      staked or bridged product of a token that already trades is not
+//      a protocol waiting on a launch: radar-3 ranks none.
+//   3. The board ranks EVERY rankable pre-token protocol, not the top
+//      160 by TVL below the floor.
 //   4. Every row carries a costed verdict (FARM / WATCH / SKIP) from a
-//      stated rule, chain-aware gas assumptions, and a peer base rate: the
-//      share of non-exchange protocols in the same age band that already
-//      have a token. The base rate is a snapshot fact, never a prediction
-//      of a date, and the ranking itself stays on implied value.
+//      stated rule, chain-aware gas assumptions, and a peer base rate.
+//   5. NEW in radar-4 — the term test. Implied value is one log-linear
+//      regression: log10(market cap) on log10(TVL), seven-day growth,
+//      age and chain breadth. Each term is tested on its own, on
+//      identical leave-one-out folds and on an older-to-newer split,
+//      and a term is kept only if it strictly lowers the held-out
+//      error and its fitted coefficient has the expected sign.
+//      A term that fails is dropped (multiplier 1.0) and the dashboard
+//      says so in plain words. Nothing here is asserted and then
+//      hidden: the keep/drop table is computed at run time from the
+//      snapshot and shipped in data.js.
 //
-// Implied value, one function of the snapshot's own figures:
+// Implied value, one fitted function of the snapshot's own figures:
 //
-//   base      = 10 ^ (fit.intercept + fit.slope * log10(tvl_usd))
-//               the fitted size curve; the implied/TVL ratio is then
-//               clamped to [0.02, 0.60] so no row's value is an extreme
-//               extrapolation of the curve.
-//   growth    = clamp(change_7d, -80, 200) per cent, shown beside the raw
-//               figure so the page never hides a clamp.
-//   growth    = 1 + (growth / 100) x 0.8
-//   maturity  = 0.55 + min(age_days, 1460) / 1460 x 0.45
-//               age_days is days since DefiLlama first listed the protocol;
-//               unknown age counts as 365 days AND is flagged age-unknown.
-//   breadth   = 1 + min(max(chains - 1, 0), 5) x 0.02
-//   implied   = max(1, round(base x growth x maturity x breadth))
+//   y = log10(mcap) ~ intercept + coef_x * log10(TVL)
+//                     + coef_g * g + coef_a * a + coef_b * b
+//   g = clamp(change_7d, -80, 200) / 100, null change counts as 0
+//   a = min(age_days, 1460) / 1460, unknown age counts as 365 days
+//   b = min(max(chains - 1, 0), 5)
+//   implied = 10 ^ y, with the implied/TVL ratio clamped to
+//   [0.02, 0.60] so no row's value is an extreme extrapolation.
 //
+// Only terms that survive the blind test get a non-zero coefficient.
 // Nothing is fetched, no clock or random value is read in the scoring
 // path, and every sort breaks ties by slug, so the same snapshot always
 // produces the same board in the same order.
@@ -61,21 +61,17 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
-/** Growth is clamped to this band before it is weighted. */
+/** Growth is clamped to this band before it is used as a feature. */
 export const GROWTH_FLOOR = -80;
 export const GROWTH_CAP = 200;
-export const GROWTH_WEIGHT = 0.8;
 
-/** Maturity runs from this floor to floor + range over this many days. */
-export const MATURITY_FLOOR = 0.55;
-export const MATURITY_RANGE = 0.45;
+/** Age is capped at this many days when it is used as a feature. */
 export const MATURITY_DAYS = 1460;
 export const UNKNOWN_AGE_DAYS = 365;
 
-/** Breadth nudge per extra chain, capped at this many extra chains. */
-export const BREADTH_PER_CHAIN = 0.02;
+/** Breadth is capped at this many extra chains. */
 export const BREADTH_MAX_CHAINS = 5;
 
 /** The fitted implied/TVL ratio is never allowed outside this band. */
@@ -95,6 +91,59 @@ export interface SizeFit {
   holdout_flat: number;
   /** How many times better the fitted curve is than the flat multiple. */
   holdout_ratio: number;
+}
+
+/** One nested model in the term test, with its held-out errors. */
+export interface TermModelResult {
+  name: string;
+  /** Short label for the table: M0 flat, M1 TVL-only, M2 +growth, and so on. */
+  label: string;
+  /** Features in this model, in order: x is always first. */
+  features: string[];
+  /** Median |log10 error| on identical leave-one-out folds. */
+  loo_median_error: number;
+  /** Median |log10 error| on the older-to-newer split, or null when it cannot run. */
+  older_newer_median_error: number | null;
+  /** Fitted coefficients on all comps, in the same order as features (intercept first). */
+  coefficients: number[];
+}
+
+/** One term's keep/drop verdict, decided before the board is built. */
+export interface TermVerdict {
+  term: 'growth' | 'maturity' | 'breadth';
+  kept: boolean;
+  /** Median LOO error of the model with this term, versus without it. */
+  loo_with: number;
+  loo_without: number;
+  /** Median older-to-newer error with this term, versus without it (null when it cannot run). */
+  older_newer_with: number | null;
+  older_newer_without: number | null;
+  /** Fitted coefficient of this term in the model that adds it, on all comps. */
+  coefficient: number;
+  reason: string;
+}
+
+/** The whole blind term test, computed at run time and shipped to the dashboard. */
+export interface TermTest {
+  n_comps: number;
+  models: TermModelResult[];
+  verdicts: TermVerdict[];
+  older_newer_n_train: number;
+  older_newer_n_test: number;
+  /** The features the board actually uses, in order. */
+  surviving_features: string[];
+}
+
+/** The fitted value model the board ranks with: only surviving terms. */
+export interface FittedValueModel {
+  intercept: number;
+  coef_x: number;
+  coef_g: number;
+  coef_a: number;
+  coef_b: number;
+  kept_growth: boolean;
+  kept_maturity: boolean;
+  kept_breadth: boolean;
 }
 
 export interface PeerBand {
@@ -214,6 +263,8 @@ export interface RadarData {
   floor_usd: number;
   model_version: string;
   fit: SizeFit;
+  term_test: TermTest;
+  fitted_model: FittedValueModel;
   peer_bands: PeerBand[];
   census: Census;
   watchlist: string[];
@@ -383,6 +434,233 @@ export function fitSizeCurve(protocols: SnapshotProtocol[]): SizeFit {
   };
 }
 
+/** The traded comps the term test runs on: a market cap and a TVL, not an exchange. */
+export function tradedComps(protocols: SnapshotProtocol[]): SnapshotProtocol[] {
+  return protocols.filter(
+    (p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0 && p.category !== 'CEX',
+  );
+}
+
+/** One comp's features, in the order the nested models add them. */
+export function valueFeatures(p: SnapshotProtocol, asOf: string): { x: number; g: number; a: number; b: number } {
+  const x = Math.log10(Math.max(1, p.tvl_usd));
+  const rawGrowth = typeof p.change_7d === 'number' && Number.isFinite(p.change_7d) ? p.change_7d : 0;
+  const g = Math.min(GROWTH_CAP, Math.max(GROWTH_FLOOR, rawGrowth)) / 100;
+  const age = ageDays(asOf, p.listed_at);
+  const ageForModel = age ?? UNKNOWN_AGE_DAYS;
+  const a = Math.min(Math.max(ageForModel, 0), MATURITY_DAYS) / MATURITY_DAYS;
+  const b = Math.min(Math.max(p.chains.length - 1, 0), BREADTH_MAX_CHAINS);
+  return { x, g, a, b };
+}
+
+/** A feature vector for a named feature set, intercept first. */
+function designRow(f: { x: number; g: number; a: number; b: number }, features: string[]): number[] {
+  const row = [1, f.x];
+  if (features.includes('g')) row.push(f.g);
+  if (features.includes('a')) row.push(f.a);
+  if (features.includes('b')) row.push(f.b);
+  return row;
+}
+
+/** Ordinary least squares by Gaussian elimination, no dependencies. */
+function fitOls(rows: number[][], ys: number[]): number[] {
+  const k = rows[0]!.length;
+  const xtx: number[][] = Array.from({ length: k }, () => Array<number>(k).fill(0));
+  const xty: number[] = Array<number>(k).fill(0);
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!;
+    for (let a = 0; a < k; a++) {
+      xty[a]! += r[a]! * ys[i]!;
+      for (let b = 0; b < k; b++) xtx[a]![b]! += r[a]! * r[b]!;
+    }
+  }
+  // Augment and eliminate with partial pivoting.
+  const aug: number[][] = xtx.map((row, i) => [...row, xty[i]!]);
+  for (let col = 0; col < k; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < k; r++) if (Math.abs(aug[r]![col]!) > Math.abs(aug[pivot]![col]!)) pivot = r;
+    if (Math.abs(aug[pivot]![col]!) < 1e-12) return Array<number>(k).fill(0);
+    [aug[col], aug[pivot]] = [aug[pivot]!, aug[col]!];
+    const div = aug[col]![col]!;
+    for (let j = col; j <= k; j++) aug[col]![j]! /= div;
+    for (let r = 0; r < k; r++) {
+      if (r === col) continue;
+      const factor = aug[r]![col]!;
+      if (factor === 0) continue;
+      for (let j = col; j <= k; j++) aug[r]![j]! -= factor * aug[col]![j]!;
+    }
+  }
+  return aug.map((row) => row[k]!);
+}
+
+function predictOls(coefs: number[], row: number[]): number {
+  let s = 0;
+  for (let i = 0; i < coefs.length; i++) s += coefs[i]! * row[i]!;
+  return s;
+}
+
+/** Median |log10 error| of one model on a train/test split of comps. */
+function heldOutError(
+  train: SnapshotProtocol[],
+  test: SnapshotProtocol[],
+  asOf: string,
+  features: string[],
+): number {
+  if (train.length === 0 || test.length === 0) return 0;
+  if (features.length === 0) {
+    const ys = train.map((p) => Math.log10(p.mcap_usd!));
+    const med = median(ys);
+    return median(test.map((p) => Math.abs(Math.log10(p.mcap_usd!) - med)));
+  }
+  const rows = train.map((p) => designRow(valueFeatures(p, asOf), features));
+  const ys = train.map((p) => Math.log10(p.mcap_usd!));
+  const coefs = fitOls(rows, ys);
+  return median(
+    test.map((p) => {
+      const pred = predictOls(coefs, designRow(valueFeatures(p, asOf), features));
+      return Math.abs(Math.log10(p.mcap_usd!) - pred);
+    }),
+  );
+}
+
+/**
+ * The blind term test. Five nested models are scored on identical
+ * leave-one-out folds over the snapshot's traded comps, plus an
+ * older-to-newer split (train on the older half by listing date, test
+ * on the newer half; called that, never "true walk-forward", because
+ * this is a one-date snapshot). A term is kept only if it strictly
+ * lowers the median LOO error versus the model without it, its fitted
+ * coefficient has the expected sign (>= 0), and its older-to-newer
+ * error does not worsen by more than 0.02 in log10. A term that fails
+ * any of those is dropped — the table reports the failure, it never
+ * hides it by keeping the term anyway.
+ */
+export function testValueTerms(protocols: SnapshotProtocol[], asOf: string): TermTest {
+  const comps = tradedComps(protocols);
+  const specs: Array<{ name: string; label: string; features: string[] }> = [
+    { name: 'M0', label: 'flat median', features: [] },
+    { name: 'M1', label: 'TVL-only', features: ['x'] },
+    { name: 'M2', label: '+growth', features: ['x', 'g'] },
+    { name: 'M3', label: '+maturity', features: ['x', 'g', 'a'] },
+    { name: 'M4', label: 'full (+breadth)', features: ['x', 'g', 'a', 'b'] },
+  ];
+  // Leave-one-out: identical folds for every model.
+  const loo: Record<string, number> = {};
+  for (const spec of specs) {
+    const errs: number[] = [];
+    for (let i = 0; i < comps.length; i++) {
+      const train = comps.filter((_, j) => j !== i);
+      errs.push(heldOutError(train, [comps[i]!], asOf, spec.features));
+    }
+    loo[spec.name] = round4(median(errs));
+  }
+  // Older-to-newer: comps with a known listing date, sorted by date then slug.
+  const dated = comps
+    .filter((p) => p.listed_at !== null)
+    .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : 1));
+  const half = Math.floor(dated.length / 2);
+  const otnTrain = dated.slice(0, half);
+  const otnTest = dated.slice(half);
+  const otn: Record<string, number | null> = {};
+  for (const spec of specs) {
+    otn[spec.name] = otnTrain.length > 0 && otnTest.length > 0 ? round4(heldOutError(otnTrain, otnTest, asOf, spec.features)) : null;
+  }
+  // Coefficients on all comps, for the sign check and the table.
+  const models: TermModelResult[] = specs.map((spec) => {
+    let coefs: number[];
+    if (spec.features.length === 0) {
+      coefs = [median(comps.map((p) => Math.log10(p.mcap_usd!)))];
+    } else {
+      coefs = fitOls(
+        comps.map((p) => designRow(valueFeatures(p, asOf), spec.features)),
+        comps.map((p) => Math.log10(p.mcap_usd!)),
+      );
+    }
+    return {
+      name: spec.name,
+      label: spec.label,
+      features: spec.features,
+      loo_median_error: loo[spec.name]!,
+      older_newer_median_error: otn[spec.name]!,
+      coefficients: coefs.map(round4),
+    };
+  });
+  const byName = new Map(models.map((m) => [m.name, m]));
+  // One verdict per added term, comparing the model with it to the one without it.
+  const terms: Array<{ term: TermVerdict['term']; withModel: string; withoutModel: string; coefIndex: number }> = [
+    { term: 'growth', withModel: 'M2', withoutModel: 'M1', coefIndex: 2 },
+    { term: 'maturity', withModel: 'M3', withoutModel: 'M2', coefIndex: 3 },
+    { term: 'breadth', withModel: 'M4', withoutModel: 'M3', coefIndex: 4 },
+  ];
+  const verdicts: TermVerdict[] = terms.map((t) => {
+    const withM = byName.get(t.withModel)!;
+    const withoutM = byName.get(t.withoutModel)!;
+    const coef = withM.coefficients[t.coefIndex] ?? 0;
+    const looImproves = withM.loo_median_error < withoutM.loo_median_error;
+    const signOk = coef >= 0;
+    const otnWith = withM.older_newer_median_error;
+    const otnWithout = withoutM.older_newer_median_error;
+    const otnOk = otnWith === null || otnWithout === null || otnWith <= otnWithout + 0.02;
+    const kept = looImproves && signOk && otnOk;
+    let reason: string;
+    if (!looImproves) reason = `did not lower median LOO error (${withM.loo_median_error} vs ${withoutM.loo_median_error} without it), so it is dropped`;
+    else if (!signOk) reason = `fitted coefficient ${coef} has the wrong sign, so it is dropped`;
+    else if (!otnOk) reason = `lowered LOO error but worsened the older-to-newer error (${otnWith} vs ${otnWithout}), so it is dropped`;
+    else reason = `lowered median LOO error from ${withoutM.loo_median_error} to ${withM.loo_median_error} with coefficient ${coef}, so it is kept`;
+    return {
+      term: t.term,
+      kept,
+      loo_with: withM.loo_median_error,
+      loo_without: withoutM.loo_median_error,
+      older_newer_with: otnWith,
+      older_newer_without: otnWithout,
+      coefficient: round4(coef),
+      reason,
+    };
+  });
+  const surviving = ['x'];
+  if (verdicts[0]!.kept) surviving.push('g');
+  if (verdicts[1]!.kept) surviving.push('a');
+  if (verdicts[2]!.kept) surviving.push('b');
+  return {
+    n_comps: comps.length,
+    models,
+    verdicts,
+    older_newer_n_train: otnTrain.length,
+    older_newer_n_test: otnTest.length,
+    surviving_features: surviving,
+  };
+}
+
+/** Refit the surviving model on all comps, for ranking. */
+export function fitSurvivingModel(protocols: SnapshotProtocol[], asOf: string, test: TermTest): FittedValueModel {
+  const comps = tradedComps(protocols);
+  const features = test.surviving_features;
+  const coefs = fitOls(
+    comps.map((p) => designRow(valueFeatures(p, asOf), features)),
+    comps.map((p) => Math.log10(p.mcap_usd!)),
+  );
+  let idx = 1;
+  const coefX = coefs[1] ?? 0;
+  let coefG = 0;
+  let coefA = 0;
+  let coefB = 0;
+  idx = 2;
+  if (features.includes('g')) coefG = coefs[idx++] ?? 0;
+  if (features.includes('a')) coefA = coefs[idx++] ?? 0;
+  if (features.includes('b')) coefB = coefs[idx++] ?? 0;
+  return {
+    intercept: round4(coefs[0] ?? 0),
+    coef_x: round4(coefX),
+    coef_g: round4(coefG),
+    coef_a: round4(coefA),
+    coef_b: round4(coefB),
+    kept_growth: test.verdicts[0]!.kept,
+    kept_maturity: test.verdicts[1]!.kept,
+    kept_breadth: test.verdicts[2]!.kept,
+  };
+}
+
 /** Age bands for the peer base rate, in days. */
 const PEER_BANDS: Array<{ label: string; min: number; max: number | null }> = [
   { label: 'under 6 months', min: 0, max: 180 },
@@ -441,14 +719,20 @@ export function peerBandFor(age: number | null, bands: PeerBand[]): PeerBand {
 
 /**
  * The multipliers and the implied value one protocol gets under the
- * fitted model. Every factor comes from the protocol's own snapshot
- * record plus the fitted curve; nothing is fetched or looked up
- * elsewhere, so the value is fully reproducible.
+ * fitted surviving model. The value is 10 raised to the fitted
+ * log10(market cap); each surviving term contributes 10 raised to
+ * its coefficient times its feature, so a dropped term contributes
+ * exactly 1.0 and the dashboard shows that. The implied/TVL ratio
+ * is clamped to [0.02, 0.60] so no row's value is an extreme
+ * extrapolation of the curve. Every factor comes from the protocol's
+ * own snapshot record plus the fitted model; nothing is fetched or
+ * looked up elsewhere, so the value is fully reproducible.
  */
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   fit: SizeFit,
+  model: FittedValueModel,
 ): {
   implied: number;
   base: number;
@@ -463,17 +747,16 @@ export function impliedValue(
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = protocol.change_7d;
   const growthUsed = Math.min(GROWTH_CAP, Math.max(GROWTH_FLOOR, finite(rawGrowth, 0)));
-  const growthMult = 1 + (growthUsed / 100) * GROWTH_WEIGHT;
-  const ageForModel = age ?? UNKNOWN_AGE_DAYS;
-  const maturityMult =
-    MATURITY_FLOOR + (Math.min(Math.max(ageForModel, 0), MATURITY_DAYS) / MATURITY_DAYS) * MATURITY_RANGE;
-  const extraChains = Math.min(Math.max(protocol.chains.length - 1, 0), BREADTH_MAX_CHAINS);
-  const breadthMult = 1 + extraChains * BREADTH_PER_CHAIN;
-  const fitted = Math.pow(10, fit.intercept + fit.slope * Math.log10(Math.max(1, protocol.tvl_usd)));
+  const f = valueFeatures(protocol, asOf);
+  const growthMult = model.kept_growth ? Math.pow(10, model.coef_g * f.g) : 1;
+  const maturityMult = model.kept_maturity ? Math.pow(10, model.coef_a * f.a) : 1;
+  const breadthMult = model.kept_breadth ? Math.pow(10, model.coef_b * f.b) : 1;
+  const pred = model.intercept + model.coef_x * f.x + model.coef_g * f.g * (model.kept_growth ? 1 : 0) + model.coef_a * f.a * (model.kept_maturity ? 1 : 0) + model.coef_b * f.b * (model.kept_breadth ? 1 : 0);
+  const fitted = Math.pow(10, pred);
   const ratio = Math.min(RATIO_CAP, Math.max(RATIO_FLOOR, fitted / Math.max(1, protocol.tvl_usd)));
   const base = protocol.tvl_usd * ratio;
-  const implied = Math.max(1, Math.round(base * growthMult * maturityMult * breadthMult));
-  return { implied, base: Math.round(base), ratio: round4(ratio), growthRaw: rawGrowth, growthUsed, growthMult, maturityMult, breadthMult, age };
+  const implied = Math.max(1, Math.round(base));
+  return { implied, base: Math.round(base), ratio: round4(ratio), growthRaw: rawGrowth, growthUsed, growthMult: round4(growthMult), maturityMult: round4(maturityMult), breadthMult: round4(breadthMult), age };
 }
 
 /** Capital for one farm position, from the protocol's own TVL. */
@@ -717,10 +1000,10 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
  * deterministic. The watchlist is the floor: every watchlist slug must
  * appear, and the board is checked for that before anything is written.
  */
-export function buildBoard(snapshot: Snapshot, fit: SizeFit, bands: PeerBand[]): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, fit: SizeFit, bands: PeerBand[], test: TermTest, model: FittedValueModel): BoardRow[] {
   const rankable = snapshot.protocols.filter(isRankable);
   const scored = rankable.map((p) => {
-    const v = impliedValue(p, snapshot.as_of, fit);
+    const v = impliedValue(p, snapshot.as_of, fit, model);
     const tier = momentumTier(p.change_7d);
     const flags = riskFlags(p, snapshot.as_of, snapshot.floor_usd);
     const band = peerBandFor(v.age, bands);
@@ -854,8 +1137,10 @@ export function radarRow(row: BoardRow): RadarRow {
 
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: RadarData } {
   const fit = fitSizeCurve(snapshot.protocols);
+  const termTest = testValueTerms(snapshot.protocols, snapshot.as_of);
+  const fittedModel = fitSurvivingModel(snapshot.protocols, snapshot.as_of, termTest);
   const bands = peerBaseRates(snapshot);
-  const board = buildBoard(snapshot, fit, bands);
+  const board = buildBoard(snapshot, fit, bands, termTest, fittedModel);
   const live = liveRows(snapshot);
   const census = buildCensus(snapshot);
   const verdictCounts: Record<Verdict, number> = { FARM: 0, WATCH: 0, SKIP: 0 };
@@ -870,6 +1155,8 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     floor_usd: snapshot.floor_usd,
     model_version: MODEL_VERSION,
     fit,
+    term_test: termTest,
+    fitted_model: fittedModel,
     peer_bands: bands,
     census,
     watchlist: snapshot.watchlist,
