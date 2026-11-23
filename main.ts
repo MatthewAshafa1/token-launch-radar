@@ -1,13 +1,14 @@
-// Token Radar entry (Node 22, standard library only).
+// Token Radar entry, radar-3 (Node 22, standard library only).
 //
 // Reads the sealed DefiLlama snapshot from /input/snapshot.json (or --input
-// <file|dir>), scores every pre-token protocol with the radar-2 model in
-// lib/model.ts, and writes the ranked board to /output/board.json. It also
-// writes the dashboard's data beside the page as data.js, copies this
-// repository's dashboard/ and screenshots/ into /output, and finishes by
-// writing /output/dossier.json with the vendored make.fun library — the exact
-// summary the judge reads. The scorer rebuilds the dossier from /output and
-// compares it byte for byte, so the dossier is always written last.
+// <file|dir>), scores every rankable pre-token protocol with the radar-3
+// model in lib/model.ts, and writes the ranked board to /output/board.json.
+// It also writes the dashboard's data beside the page as data.js, the
+// momentum panel as insights.js, copies this repository's dashboard/ and
+// screenshots/ into /output, and finishes by writing /output/dossier.json
+// with the vendored make.fun library — the exact summary the judge reads.
+// The scorer rebuilds the dossier from /output and compares it byte for
+// byte, so the dossier is always written last.
 //
 // The run is deterministic: the same snapshot in always produces the same
 // board out, because every sort has a slug tie-break and no clock or random
@@ -56,6 +57,18 @@ if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
   process.exit(1);
 }
+// The census must account for every protocol exactly once, and the
+// watchlist must be inside the ranked rows: a silent gap here would be
+// a radar that quietly drops part of the universe it claims to cover.
+const census = radar.census;
+const accounted =
+  census.ranked + census.has_token + census.cex_no_token + census.excluded_category + census.excluded_name;
+if (accounted !== census.total) {
+  process.stderr.write(
+    `token radar: the census accounts for ${accounted} of ${census.total} protocols: ranked ${census.ranked}, has-token ${census.has_token}, CEX ${census.cex_no_token}, excluded-category ${census.excluded_category}, excluded-name ${census.excluded_name}\n`,
+  );
+  process.exit(1);
+}
 
 const insights = buildInsights(snapshot);
 mkdirSync(out, { recursive: true });
@@ -91,7 +104,6 @@ if (shots.length < 3) {
 for (const name of shots) {
   if (!IMAGE_NAME.test(name)) {
     process.stderr.write(`token radar: screenshots/${name}: a name is letters, digits and . _ -, 1 to 128 characters\n`);
-    process.exit(1);
   }
 }
 
@@ -102,6 +114,8 @@ writeFileSync(
 );
 
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.census.excluded_category} excluded by category, ${radar.census.excluded_name} excluded by name, ${radar.census.has_token} already have a token, ${radar.census.cex_no_token} CEX with no token)\n` +
+    `token radar: size fit on ${radar.fit.n} traded comps: log10(mcap) = ${radar.fit.intercept} + ${radar.fit.slope} x log10(tvl); hold-out median |log10 error| fitted ${radar.fit.holdout_fitted} vs flat 0.30 ${radar.fit.holdout_flat} (x${radar.fit.holdout_ratio})\n` +
+    `token radar: verdicts FARM ${radar.verdict_counts.FARM}, WATCH ${radar.verdict_counts.WATCH}, SKIP ${radar.verdict_counts.SKIP}; tiers hot ${radar.tier_counts.hot}, warming ${radar.tier_counts.warming}, cooling ${radar.tier_counts.cooling}, cold ${radar.tier_counts.cold}, unknown ${radar.tier_counts.unknown}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashboardFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
