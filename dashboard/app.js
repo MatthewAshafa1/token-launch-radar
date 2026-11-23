@@ -1,4 +1,4 @@
-// Token Radar dashboard (radar-3). It reads window.RADAR — written beside
+// Token Radar dashboard (radar-4). It reads window.RADAR — written beside
 // dashboard/ by main.ts — and renders the ranked board, a filterable table,
 // a per-protocol detail view with the model's own inputs, the protocol's
 // farm plan (read from the data, never recomputed here), and a model
@@ -35,25 +35,30 @@
     return n.toFixed(3) + 'x';
   }
 
-  // The radar-3 model in one function: a fitted size curve (log10 market
-  // cap on log10 TVL, fitted on the snapshot's own traded protocols),
-  // seven-day growth clamped and weighted, maturity over four years with
-  // no token, and a small breadth nudge for protocols live on more
-  // chains. The page recomputes a row and checks the number board.json
-  // carries, so a stale dataset would show up here.
+  // The radar-4 model in one function: one log-linear regression on the
+  // snapshot's own traded protocols. Only terms that survived the blind
+  // test (leave-one-out plus older-to-newer, in DATA.term_test) get a
+  // non-zero coefficient; a dropped term contributes exactly 1.0. The
+  // page recomputes a row and checks the number board.json carries, so
+  // a stale dataset would show up here. `weight` and `scale` are the
+  // sandbox what-ifs: they scale the fitted curve, they never revive
+  // a dropped term.
   function impliedOf(row, fit, weight, scale) {
-    var w = weight === undefined ? 0.8 : weight;
+    var m = DATA.fitted_model;
+    var w = weight === undefined ? 1 : weight;
     var s = scale === undefined ? 1 : scale;
-    var fitted = Math.pow(10, fit.intercept + fit.slope * Math.log10(Math.max(1, row.tvl_usd)));
-    var ratio = Math.min(0.6, Math.max(0.02, fitted / Math.max(1, row.tvl_usd)));
-    var base = row.tvl_usd * ratio * s;
-    var growth = Math.min(200, Math.max(-80, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
-    var growthMult = 1 + (growth / 100) * w;
+    var x = Math.log10(Math.max(1, row.tvl_usd));
+    var growth = Math.min(200, Math.max(-80, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d)) / 100;
     var age = row.age_days === null || row.age_days === undefined ? 365 : row.age_days;
-    var maturity = 0.55 + (Math.min(Math.max(age, 0), 1460) / 1460) * 0.45;
-    var extraChains = Math.min(Math.max((row.chains || []).length - 1, 0), 5);
-    var breadth = 1 + extraChains * 0.02;
-    return Math.max(1, Math.round(base * growthMult * maturity * breadth));
+    var a = Math.min(Math.max(age, 0), 1460) / 1460;
+    var b = Math.min(Math.max((row.chains || []).length - 1, 0), 5);
+    var pred = m.intercept + m.coef_x * x * s
+      + (m.kept_growth ? m.coef_g * growth * w : 0)
+      + (m.kept_maturity ? m.coef_a * a : 0)
+      + (m.kept_breadth ? m.coef_b * b : 0);
+    var fitted = Math.pow(10, pred);
+    var ratio = Math.min(0.6, Math.max(0.02, fitted / Math.max(1, row.tvl_usd)));
+    return Math.max(1, Math.round(row.tvl_usd * ratio));
   }
 
   function el(tag, attrs) {
@@ -147,7 +152,7 @@
       el('div', { class: 'top-meta' },
         el('span', { text: 'Snapshot ' + DATA.as_of }),
         el('span', { text: 'DefiLlama protocol index' }),
-        el('span', { text: DATA.model_version + ' model · fitted, not flat' })
+        el('span', { text: DATA.model_version + ' model · every term blind-tested' })
       )
     );
   }
@@ -338,6 +343,8 @@
 
   function modelPanel() {
     var f = DATA.fit;
+    var t = DATA.term_test;
+    var m = DATA.fitted_model;
     var bandRows = DATA.peer_bands.map(function (b) {
       return el('tr', null,
         el('td', { text: b.label }),
@@ -346,15 +353,44 @@
         el('td', { class: 'num', text: Math.round(b.rate * 100) + '%' })
       );
     });
+    var termRows = t.verdicts.map(function (v) {
+      var label = v.term === 'growth' ? '7-day growth' : v.term === 'maturity' ? 'Age (maturity)' : 'Chain breadth';
+      return el('tr', null,
+        el('td', { text: label }),
+        el('td', { text: v.kept ? 'KEPT' : 'DROPPED' }),
+        el('td', { class: 'num', text: v.loo_with.toFixed(4) + ' vs ' + v.loo_without.toFixed(4) }),
+        el('td', { class: 'num', text: (v.older_newer_with === null ? 'n/a' : v.older_newer_with.toFixed(4)) + ' vs ' + (v.older_newer_without === null ? 'n/a' : v.older_newer_without.toFixed(4)) }),
+        el('td', { class: 'num', text: String(v.coefficient) })
+      );
+    });
+    var dropped = t.verdicts.filter(function (v) { return !v.kept; }).map(function (v) { return v.term; });
+    var kept = t.verdicts.filter(function (v) { return v.kept; }).map(function (v) { return v.term; });
+    var termLine = dropped.length === 0
+      ? 'Every term survived the blind test, so the board uses all of them.'
+      : (dropped.length === t.verdicts.length
+        ? 'None of the three extra terms survived the blind test, so the board uses the TVL-only curve alone. That is the honest result on this snapshot: growth, age and breadth did not improve held-out error, so they are not used — the board does not pretend they help.'
+        : 'Dropped: ' + dropped.join(', ') + '. Kept: ' + (kept.length ? kept.join(', ') : 'none besides TVL') + '.');
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'base = TVL x clamp( 10 ^ (' + f.intercept + ' + ' + f.slope + ' x log10(TVL)) / TVL, 0.02, 0.60 )\n' +
-        'implied = round( base x (1 + clamp(change_7d, -80, 200) / 100 x 0.8) x (0.55 + min(age_days, 1460) / 1460 x 0.45) x (1 + min(chains - 1, 5) x 0.02) )'
+        'log10(implied) = ' + m.intercept + ' + ' + m.coef_x + ' x log10(TVL)' +
+        (m.kept_growth ? ' + ' + m.coef_g + ' x growth' : '') +
+        (m.kept_maturity ? ' + ' + m.coef_a + ' x age' : '') +
+        (m.kept_breadth ? ' + ' + m.coef_b + ' x breadth' : '') + '\n' +
+        'implied = round( TVL x clamp( 10 ^ log10(implied) / TVL, 0.02, 0.60 ) )'
       ),
-      el('p', { class: 'sub', text: 'The size curve is fitted on the snapshot\'s own traded protocols: ' + f.n + ' comparables with a market cap and a TVL, exchanges excluded. log10(market cap) = ' + f.intercept + ' + ' + f.slope + ' x log10(TVL). Held out two-fold, the fitted curve\'s median error is ' + f.holdout_fitted + ' in log10 (about x' + Math.pow(10, f.holdout_fitted).toFixed(2) + ') against ' + f.holdout_flat + ' for a flat 0.30x multiple (about x' + Math.pow(10, f.holdout_flat).toFixed(2) + ') — the fit is ' + f.holdout_ratio + 'x closer. A flat multiple would say a $5B protocol is worth 100x a $50M one; the fitted curve says size pays off more slowly than that, which is why the ranking is not a TVL table.' }),
-      el('p', { class: 'sub', text: 'Growth is clamped at -80% to +200% and weighted 0.8; the detail view shows the raw week beside the clamped figure the model used. Age is the time since the protocol was first listed; an unlisted age uses 365 days and is flagged age-unknown. Breadth is a small nudge for protocols live on more chains.' }),
+      el('p', { class: 'sub', text: 'The model is one log-linear regression fitted on the snapshot\'s own traded protocols: ' + f.n + ' comparables with a market cap and a TVL, exchanges excluded. Growth is the 7-day TVL change clamped to -80%…+200% and divided by 100 (no change reported counts as 0). Age is days since first listed, capped at 1460, over 1460 (unknown age uses 365 days and is flagged age-unknown). Breadth is extra chains beyond the first, capped at 5.' }),
+      el('h3', { text: 'Term test: every value term blind-tested, failures dropped' }),
+      el('p', { class: 'sub', text: 'Five nested models were scored on identical leave-one-out folds over ' + t.n_comps + ' traded comparables, plus an older-to-newer split (train on the ' + t.older_newer_n_train + ' older-listed protocols, test on the ' + t.older_newer_n_test + ' newer-listed ones — a one-date snapshot, so this is an older-to-newer split, never a true walk-forward). A term is kept only if it strictly lowers the median leave-one-out error, its fitted coefficient has the expected sign, and its older-to-newer error does not worsen by more than 0.02. ' + termLine }),
+      el('div', { class: 'table-wrap' },
+        el('table', null,
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Term' }), el('th', { scope: 'col', text: 'Verdict' }), el('th', { scope: 'col', text: 'LOO error with vs without' }), el('th', { scope: 'col', text: 'Older-to-newer with vs without' }), el('th', { scope: 'col', text: 'Coefficient' }))),
+          el('tbody', null, termRows)
+        )
+      ),
+      el('p', { class: 'sub', text: 'Nested models, median |log10 error|: ' + t.models.map(function (mo) { return mo.name + ' ' + mo.label + ' LOO ' + mo.loo_median_error + ', older-to-newer ' + (mo.older_newer_median_error === null ? 'n/a' : mo.older_newer_median_error); }).join('; ') + '. The size curve alone is also tested two-fold against a flat 0.30x multiple: fitted median error ' + f.holdout_fitted + ' in log10 (about x' + Math.pow(10, f.holdout_fitted).toFixed(2) + ') against ' + f.holdout_flat + ' for flat 0.30x (about x' + Math.pow(10, f.holdout_flat).toFixed(2) + ') — the fit is ' + f.holdout_ratio + 'x closer. A flat multiple would say a $5B protocol is worth 100x a $50M one; the fitted curve says size pays off more slowly than that, which is why the ranking is not a TVL table.' }),
+      el('p', { class: 'sub', text: 'Growth is clamped at -80% to +200% and the detail view shows the raw week beside the clamped figure the model used. Age is the time since the protocol was first listed; an unlisted age uses 365 days and is flagged age-unknown. Breadth is a small nudge for protocols live on more chains — when it is dropped, it contributes exactly 1.0.' }),
       el('h3', { text: 'Verdicts: FARM, WATCH, SKIP' }),
       el('p', { class: 'sub', text: 'FARM means top-40 by implied value, moving (hot or warming) and carrying at most one risk flag — or top-10 with no risk flag at all, where the value case does not rest on a single week\'s move. WATCH means top-100 or moving fast. Everything else is SKIP. A big protocol shrinking for a week with flags on it is never a FARM. Gas figures are assumptions, not snapshot facts: $12 on Ethereum, $1 on Solana, $2 on Base, Arbitrum, Optimism and Polygon, $5 elsewhere — the detail view says so next to the numbers.' }),
       el('h3', { text: 'Peer base rate: how often protocols of this age have a token' }),
@@ -425,9 +461,10 @@
       el('p', { class: 'sub', text: 'Move the sliders to see how this row\'s implied value responds. This changes nothing on the board — it is a what-if for this protocol only.' })
     );
     var out = el('p', null, 'Implied value with these settings: ', el('output', { text: fmtUsd(row.implied_value_usd) }));
-    var wLabel = el('label', { for: 'sb-weight', text: 'Growth weight (model: 0.8)' });
-    var wSlider = el('input', { type: 'range', id: 'sb-weight', min: '0', max: '1.5', step: '0.1', value: '0.8' });
-    var sLabel = el('label', { for: 'sb-scale', text: 'Size multiple scale (model: 1.0x)' });
+    var growthKept = DATA.fitted_model && DATA.fitted_model.kept_growth;
+    var wLabel = el('label', { for: 'sb-weight', text: growthKept ? 'Growth coefficient scale (model: 1.0x)' : 'Growth term: DROPPED by the blind test — the slider cannot revive it' });
+    var wSlider = el('input', { type: 'range', id: 'sb-weight', min: '0', max: '2', step: '0.1', value: '1', disabled: growthKept ? null : 'disabled' });
+    var sLabel = el('label', { for: 'sb-scale', text: 'Size slope scale (model: 1.0x)' });
     var sSlider = el('input', { type: 'range', id: 'sb-scale', min: '0.5', max: '1.5', step: '0.1', value: '1' });
     function refreshSandbox() {
       var v = impliedOf(row, DATA.fit, parseFloat(wSlider.value), parseFloat(sSlider.value));
