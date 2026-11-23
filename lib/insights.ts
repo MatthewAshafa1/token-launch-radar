@@ -1,6 +1,6 @@
-// Momentum and risk insights for the token radar (radar-3).
+// Momentum and risk insights for the token radar (radar-4).
 //
-// radar-3 fixes radar-2's insights panel:
+// radar-4 keeps radar-3's insights panel:
 //
 //   - Chain leaders are drawn from rankable protocols only, one leader
 //     per chain, deduplicated by slug. radar-2's strip showed the same
